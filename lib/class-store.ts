@@ -1,0 +1,21 @@
+import {randomBytes} from 'node:crypto';
+import {mkdir,readFile,writeFile,rename} from 'node:fs/promises';
+import path from 'node:path';
+import {Lesson,Quiz,isState} from './model';
+import {createSessionStore,sessionStore,SessionError,validateQuiz} from './session-store';
+export type Assignment={id:string;title:string;due:string;kind:'lesson'|'quiz';lesson?:Lesson;sessionCode?:string;sessionOwner?:string;completed:string[]};
+type Classroom={code:string;ownerToken:string;name:string;members:string[];assignments:Assignment[]};
+export function createClassStore(directory:string,sessions:ReturnType<typeof createSessionStore>){
+ const file=path.join(directory,'classes.json');let queue:Promise<unknown>=Promise.resolve();
+ function run<T>(fn:(classes:Classroom[])=>Promise<T>|T,write=false):Promise<T>{const task=queue.then(async()=>{let classes:Classroom[]=[];try{classes=JSON.parse(await readFile(file,'utf8'));if(!Array.isArray(classes))throw Error('Invalid classes');}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}const result=await fn(classes);if(write){await mkdir(directory,{recursive:true});const tmp=file+'.'+randomBytes(8).toString('hex')+'.tmp';await writeFile(tmp,JSON.stringify(classes),{mode:0o600});await rename(tmp,file);}return result;});queue=task.catch(()=>{});return task;}
+ function find(classes:Classroom[],code:string,token?:string){const c=classes.find(c=>c.code===code);if(!c)throw new SessionError('notFound',404);if(token!==undefined&&token!==c.ownerToken)throw new SessionError('forbidden',403);return c;}
+ function student(name:string){if(typeof name!=='string'||!name.trim()||name.trim().length>80)throw new SessionError('invalid',400);return name.trim();}
+ return {
+ create(name:string){return run(classes=>{name=student(name);if(classes.length>=100)throw new SessionError('limit',429);let code='';do{const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';code=Array.from(randomBytes(6),v=>alphabet[v%alphabet.length]).join('');}while(classes.some(c=>c.code===code));const c:Classroom={code,ownerToken:randomBytes(32).toString('hex'),name,members:[],assignments:[]};classes.push(c);return {code,ownerToken:c.ownerToken,name};},true);},
+ get(code:string,token?:string){return run(async classes=>{const c=find(classes,code,token);const assignments=await Promise.all(c.assignments.map(async a=>{const {sessionOwner,completed,...safe}=a;const report=token&&a.sessionCode?await sessions.results(a.sessionCode,sessionOwner!):undefined;return token?{...safe,completed,results:report?.results??[],errors:report?.errors??[]}:safe;}));return {code:c.code,name:c.name,assignments,...(token?{members:c.members}:{})};});},
+ join(code:string,name:string){return run(classes=>{const c=find(classes,code);name=student(name);if(!c.members.includes(name)){if(c.members.length>=200)throw new SessionError('limit',429);c.members.push(name);}return {joined:true};},true);},
+ assign(code:string,token:string,value:{kind:string;due:string;lesson?:Lesson;quiz?:Quiz}){return run(async classes=>{const c=find(classes,code,token);if(c.assignments.length>=100)throw new SessionError('limit',429);if(typeof value.due!=='string'||(value.due&&!Number.isFinite(Date.parse(value.due))))throw new SessionError('invalid',400);const a:Assignment={id:randomBytes(16).toString('hex'),title:'',kind:'lesson',due:value.due,completed:[]};if(value.kind==='lesson'&&isState({lessons:[value.lesson],results:[]})){a.lesson=structuredClone(value.lesson!);a.title=a.lesson.title;}else if(value.kind==='quiz'&&validateQuiz(value.quiz)){const session=await sessions.create(value.quiz);a.kind='quiz';a.title=value.quiz.title;a.sessionCode=session.code;a.sessionOwner=session.ownerToken;}else throw new SessionError('invalid',400);c.assignments.push(a);return {assigned:true};},true);},
+ complete(code:string,id:string,name:string){return run(classes=>{const c=find(classes,code);name=student(name);if(!c.members.includes(name))throw new SessionError('forbidden',403);const a=c.assignments.find(a=>a.id===id&&a.kind==='lesson');if(!a)throw new SessionError('notFound',404);if(!a.completed.includes(name))a.completed.push(name);return {completed:true};},true);}
+ };
+}
+export const classStore=createClassStore(path.join(process.cwd(),'.local-games'),sessionStore);

@@ -1,0 +1,10 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {gradeQuiz,isState,validLesson} from '../lib/model';
+import {questions,terms} from '../lib/data';
+import {translations} from '../lib/i18n';
+test('quiz grades full, partial and unanswered attempts',()=>{assert.equal(gradeQuiz(questions,{}),0);assert.equal(gradeQuiz(questions,Object.fromEntries(questions.map(q=>[q.id,q.correct]))),4);assert.equal(gradeQuiz(questions,{q1:0,q2:0,q3:2,q4:0}),2);});
+test('lesson rejects blank fields',()=>{assert.equal(validLesson({title:'  ',objective:'a',activities:'b'}),false);assert.equal(validLesson({title:'Bridge',objective:'Understand force',activities:'Build and test'}),true);});
+test('storage validates persisted records',()=>{const s={lessons:[],results:[{id:'1',student:'A',quizId:'q',score:2,total:4,date:new Date().toISOString()}]};assert.ok(isState(JSON.parse(JSON.stringify(s))));assert.equal(isState({...s,results:[{...s.results[0],score:5}]}),false);assert.equal(isState({lessons:[{id:'1'}],results:[]}),false);assert.equal(isState(null),false);});
+test('all content and UI languages are complete',()=>{for(const l of ['ky','ru','en'] as const){assert.deepEqual(Object.keys(translations[l]).sort(),Object.keys(translations.ru).sort());for(const term of terms){assert.ok(term.name[l]);assert.ok(term.definition[l]);}for(const q of questions){assert.ok(q.prompt[l]);assert.ok(q.correct>=0&&q.correct<q.choices.length);q.choices.forEach(c=>assert.ok(c[l]));}}});
+test('corrupt storage with null records is rejected without crashing',()=>{assert.equal(isState({lessons:[null],results:[]}),false);assert.equal(isState({lessons:[],results:[null]}),false);});

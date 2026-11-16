@@ -1,0 +1,20 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {createClassStore} from '../lib/class-store';
+import {createSessionStore} from '../lib/session-store';
+import {Lesson,Quiz} from '../lib/model';
+test('class assignments preserve privacy, teacher access, completion and quiz progress across restarts',async()=>{
+ const dir=path.resolve('../../work/classes-'+randomUUID()),sessions=createSessionStore(dir),store=createClassStore(dir,sessions);
+ const c=await store.create('6A');await store.join(c.code,'Student');await store.join(c.code,'Student');
+ const lesson:Lesson={id:'l1',title:'Lesson',subject:'science',grade:'6',objective:'Understand inertia',activities:'Experiment',termIds:[],createdAt:new Date().toISOString()};
+ const quiz:Quiz={id:'q1',title:'Quiz',topic:'Inertia',subject:'science',grade:'6',lang:'en',source:'manual',createdAt:new Date().toISOString(),questions:[{id:'q',kind:'boolean',prompt:'Test?',choices:['True','False'],answer:'True',explanation:'Yes'}]};
+ await assert.rejects(()=>store.assign(c.code,'wrong',{kind:'lesson',due:'',lesson}));
+ await assert.rejects(()=>store.assign(c.code,c.ownerToken,{kind:'lesson',due:'invalid',lesson}));
+ await store.assign(c.code,c.ownerToken,{kind:'lesson',due:'',lesson});await store.assign(c.code,c.ownerToken,{kind:'quiz',due:'',quiz});
+ const publicClass=await store.get(c.code);const raw=JSON.stringify(publicClass);assert.ok(!raw.includes('ownerToken')&&!raw.includes('sessionOwner')&&!raw.includes('Student')&&!raw.includes('answer'));
+ const id=publicClass.assignments[0].id;await assert.rejects(()=>store.complete(c.code,id,'Other'));await store.complete(c.code,id,'Student');await store.complete(c.code,id,'Student');
+ await sessions.submit(publicClass.assignments[1].sessionCode!,'Student',randomUUID(),{q:'False'});
+ const report=await createClassStore(dir,sessions).get(c.code,c.ownerToken);assert.deepEqual(report.members,['Student']);const first=report.assignments[0],second=report.assignments[1];assert.ok('completed' in first);assert.ok('results' in second);assert.deepEqual(first.completed,['Student']);assert.equal(second.results[0].score,0);assert.equal(second.errors[0].count,1);
+});
